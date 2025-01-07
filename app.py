@@ -67,13 +67,11 @@ def ignorar_poluicao(celula_funcao, celula_carga):
     Retorna True se detectarmos poluições como:
     - "5 HORAS AQUI"
     - "INTERVALO"
-    - ou algo parecido
     Assim, podemos ignorar esse bloco.
     """
     texto_funcao = str(celula_funcao).upper()
     texto_carga  = str(celula_carga).upper()
 
-    # Se em qualquer um dos dois aparecer "HORAS AQUI" ou "INTERVALO", ignoramos
     if "HORAS AQUI" in texto_funcao or "HORAS AQUI" in texto_carga:
         return True
     if "INTERVALO" in texto_funcao or "INTERVALO" in texto_carga:
@@ -81,8 +79,9 @@ def ignorar_poluicao(celula_funcao, celula_carga):
     
     return False
 
+
 #################################
-# LÓGICA PRINCIPAL
+# LÓGICA DE PROCESSAMENTO
 #################################
 
 def processar_planilha(excel_file) -> dict:
@@ -95,9 +94,6 @@ def processar_planilha(excel_file) -> dict:
     xls = pd.ExcelFile(excel_file)
     abas_ignorar = ["BASE", "TABELAS", "PADRÕES", "ARQUIVO BASE"]
     abas_validas = [aba for aba in xls.sheet_names if aba.upper() not in [a.upper() for a in abas_ignorar]]
-
-    # Data de hoje (usada para nada em especial, mas podemos colocar no CSV)
-    # data_hoje = datetime.datetime.now().strftime("%Y%m%d")
 
     dict_abas_result = {}
 
@@ -185,9 +181,15 @@ def processar_planilha(excel_file) -> dict:
                             carga  = ""
                             col_consumidas = 2
 
-                    # Ignorar poluições?
+                    # ---- NOVA LÓGICA: ignorar números “soltos” ----
+                    # Se não tiver função e não for uma carga válida (ex '6H'),
+                    # significa que é só um número sem nada => ignora
+                    if not funcao and not re.match(r'^\d+H$', carga):
+                        col += col_consumidas
+                        continue
+
+                    # Ignorar poluições ("HORAS AQUI", "INTERVALO")
                     if ignorar_poluicao(funcao, carga):
-                        # Apenas pular essas colunas, não cria registro
                         col += col_consumidas
                         continue
 
@@ -247,10 +249,11 @@ def processar_planilha(excel_file) -> dict:
     return dict_abas_result
 
 
+#################################
+# FUNÇÕES DE DOWNLOAD (STREAMLIT)
+#################################
+
 def gerar_download_link_para_df(df, filename):
-    """
-    Gera um link de download (em memória) para um DataFrame CSV.
-    """
     csv_bytes = df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
     return st.download_button(
         label=f"Baixar {filename}",
@@ -260,10 +263,6 @@ def gerar_download_link_para_df(df, filename):
     )
 
 def gerar_download_zip(dict_df):
-    """
-    Gera um ZIP em memória (BytesIO) com todos os CSVs das abas.
-    Retorna (bytes_zip, nome_arquivo_zip).
-    """
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for aba, df in dict_df.items():
@@ -287,6 +286,7 @@ def main():
     - O script extrairá informações (quantidade, função, carga horária, horário) e 
       tentará unificar turnos pernoite.
     - Algumas poluições como "5 HORAS AQUI" e "INTERVALO" serão descartadas.
+    - Agora, se encontrar um número sozinho sem função/carga, ele também será **ignorado**.
     """)
 
     uploaded_file = st.file_uploader("Selecione o arquivo Excel", type=["xls", "xlsx"])
@@ -303,19 +303,21 @@ def main():
 
         # Permitir escolher quais abas o usuário quer baixar
         abas_list = list(dict_abas.keys())
-        abas_selecionadas = st.multiselect("Selecione as abas para download (ou não selecione para baixar todas):",
-                                           abas_list, default=abas_list)
+        abas_selecionadas = st.multiselect(
+            "Selecione as abas para download (ou deixe vazio para baixar todas):",
+            abas_list, 
+            default=abas_list
+        )
 
-        # Botões de download
+        # Botões de download individual
         if abas_selecionadas:
             st.write("### Download individual das abas selecionadas:")
             for aba in abas_selecionadas:
                 df_temp = dict_abas[aba]
                 gerar_download_link_para_df(df_temp, f"{aba}.csv")
 
-        # Botão para baixar todas as abas (ou as selecionadas)
-        st.write("### Download de todas as abas (zip):")
-        # Se o usuário selecionou algumas abas, vamos criar um dicionário apenas com as selecionadas
+        # Botão para baixar todas as abas (ou selecionadas) em ZIP
+        st.write("### Download de todas as abas em ZIP:")
         if abas_selecionadas:
             dict_filtrado = {k: dict_abas[k] for k in abas_selecionadas}
         else:

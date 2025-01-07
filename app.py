@@ -7,23 +7,51 @@ import zipfile
 from io import BytesIO
 
 #################################
-# FUNÇÕES AUXILIARES
+# 1) Dicionário "De → Para"
+#################################
+mapeamento_cargos = {
+    "ASG": "ASG LIMPEZA",
+    "Aux. Lider": "AUX.LIDER DE RAMPA",
+    "Operador": "OPERADOR DE EQUIPAMENTOS",
+    "ASA": "AUXILIAR DE RAMPA",
+    "SUPERVISOr": "SUPERVISOR DE OPERAÇÕES",
+    "ENC": "ENC. DE LIMPEZA",
+    "LIDER OP.": "LIDER DE OPERAÇÕES",
+    "SUPERVISOR PAX": "SUPERVISOR SERV A PAX",
+    "PAX LIDER": "ATENDENTE A PAX LIDER",
+    "(BALANCEIRO)": "AUX DE RAMPA (BALANCEIRO)",
+    "SUPERVISOR TEC. OPERACIONAL": "SUPERVISOR TEC. OPERACIONAL",
+    "LIDER PAX": "ATENDENTE A PASSAGEIRO LIDER",
+    "AGENTE DE AVIAÇÃO EXECUTIVA": "AGENTE DE AVIAÇÃO EXECUTIVA",
+    "INSPETOR SAFETY E QUALIDADE": "INSPETOR SAFETY E QUALIDADE",
+    "PAX": "AGENTE SERV A PAX",
+    "AGENTE SERV A PASSAGEIRO": "AGENTE SERV A PASSAGEIRO",
+    "AGENTE DE PROTEÇÃO": "AGENTE DE PROTEÇÃO",
+    "APAC": "APAC",
+    "COORDENADOR DE OPERAÇÕES": "COORDENADOR DE OPERAÇÕES",
+    "SUPERV DE CARGAS": "SUPERV DE CARGAS",
+    "SUPERVISOR DE LIMPEZA": "SUPERVISOR DE LIMPEZA",
+    "GERENTE ATENDENTE A PAX": "GERENTE ATENDENTE A PAX"
+}
+
+#################################
+# 2) Funções auxiliares
 #################################
 
 def hhmm_to_minutes(hhmm):
-    """ Converte 'HH:MM' em minutos desde 00:00 (0..1440). """
+    """ Converte 'HH:MM' em inteiro de minutos após 00:00. """
     hh, mm = hhmm.split(":")
     return int(hh)*60 + int(mm)
 
 def minutes_to_hhmm(total_minutes):
-    """ Converte minutos (podendo ser >1440) em 'HH:MM' no formato 24h (mod 24). """
+    """ Converte minutos em 'HH:MM' (24h, modulo 1440). """
     total_minutes = total_minutes % (24*60)
     hh = total_minutes // 60
     mm = total_minutes % 60
     return f"{hh:02d}:{mm:02d}"
 
 def eh_celula_numero(valor):
-    """ Verifica se a célula começa com dígito. Ex.: '3', '15'... """
+    """ Verifica se a célula começa com dígito (ex.: '3'). """
     if pd.isna(valor):
         return False
     return bool(re.match(r'^\d+', str(valor).strip()))
@@ -31,10 +59,10 @@ def eh_celula_numero(valor):
 def calcula_intervalos(h_inicio_str, carga_h_str):
     """
     Se for 7H => 4h + 1h pausa + 3h.
-    Caso contrário => turno direto (2H,4H,6H, etc.).
+    Caso contrário => turno único (2H,4H,6H etc.).
     Retorna (Entrada1, Saida1, Entrada2, Saida2).
     """
-    match = re.match(r"(\d+)", carga_h_str)  # extrai o número
+    match = re.match(r"(\d+)", carga_h_str)
     if not match:
         return ("","","","")
 
@@ -62,68 +90,72 @@ def calcula_intervalos(h_inicio_str, carga_h_str):
             ""
         )
 
-def ignorar_poluicao(celula_funcao, celula_carga):
+def ignorar_poluicao(funcao, carga):
     """
-    Retorna True se detectarmos poluições como:
-    - "5 HORAS AQUI"
-    - "INTERVALO"
-    Assim, podemos ignorar esse bloco.
+    Se contiver 'HORAS AQUI' ou 'INTERVALO', consideramos poluição.
     """
-    texto_funcao = str(celula_funcao).upper()
-    texto_carga  = str(celula_carga).upper()
-
-    if "HORAS AQUI" in texto_funcao or "HORAS AQUI" in texto_carga:
+    f = str(funcao).upper()
+    c = str(carga).upper()
+    if "HORAS AQUI" in f or "HORAS AQUI" in c:
         return True
-    if "INTERVALO" in texto_funcao or "INTERVALO" in texto_carga:
+    if "INTERVALO" in f or "INTERVALO" in c:
         return True
-    
     return False
 
+def mapear_cargo(funcao):
+    """
+    Faz busca parcial em 'funcao' para substituir segundo o dicionário mapeamento_cargos.
+    Exemplo:
+      - Se funcao="LIDER OP.,6H" => 'LIDER OP.' é detectado e substitui => "LIDER DE OPERAÇÕES"
+      - Se "ASA" => "AUXILIAR DE RAMPA"
+    Retorna a string mapeada se encontrado; senão, retorna original.
+    """
+    funcao_up = funcao.upper()
+    for de, para in mapeamento_cargos.items():
+        # Buscamos se 'de' existe (case-insensitive) dentro de funcao
+        if de.upper() in funcao_up:
+            return para
+    return funcao  # se não achar nada, mantém original
 
 #################################
-# LÓGICA DE PROCESSAMENTO
+# 3) Processamento principal
 #################################
 
-def processar_planilha(excel_file) -> dict:
+def processar_planilha(excel_file, periodo) -> dict:
     """
-    Recebe um arquivo Excel (BytesIO ou similar),
-    retorna um dicionário { nomeAba: DataFrame } com o resultado.
+    - 'periodo' é uma string como "06/2025".
+    - Retorna { nomeAba: DataFrame } com colunas:
+        Base, Periodo, Quantidade, Cargo, CargaHoraria, Entrada1, Saida1, Entrada2, Saida2
     """
-
-    # Lê o Excel via pd.ExcelFile
     xls = pd.ExcelFile(excel_file)
     abas_ignorar = ["BASE", "TABELAS", "PADRÕES", "ARQUIVO BASE"]
-    abas_validas = [aba for aba in xls.sheet_names if aba.upper() not in [a.upper() for a in abas_ignorar]]
+    abas_validas = [aba for aba in xls.sheet_names 
+                    if aba.upper() not in [a.upper() for a in abas_ignorar]]
 
     dict_abas_result = {}
 
     for nome_aba in abas_validas:
-        # Lê a aba inteira (sem header)
         df = pd.read_excel(excel_file, sheet_name=nome_aba, header=None)
         nrows, ncols = df.shape
 
-        # Vamos até a coluna de índice 800 (zero-based), se existir
         col_inicio = 6
-        col_fim = 800
+        col_fim    = 800
         if col_fim >= ncols:
             col_fim = ncols - 1
 
-        # Linha 2 do Excel => df index = 1 => mapeia col->horario
+        # Mapeia col->horario (linha 2 => df index=1)
         if nrows < 2:
-            # Poucas linhas, nada a fazer
             continue
         
         col_to_horario = {}
         for c in range(col_inicio, col_fim+1):
+            val = ""
             if c < ncols:
-                val = df.iloc[1,c]
-                if pd.isna(val):
-                    val = ""
-                col_to_horario[c] = str(val).strip()
-            else:
-                col_to_horario[c] = ""
+                tmp = df.iloc[1,c]
+                if not pd.isna(tmp):
+                    val = str(tmp).strip()
+            col_to_horario[c] = val
 
-        # Área de planejamento começa na linha 87 => index 86
         linha_inicio = 86
         if linha_inicio >= nrows:
             continue
@@ -142,7 +174,7 @@ def processar_planilha(excel_file) -> dict:
                     qtd_match = re.match(r'^(\d+)', str(cell_val).strip())
                     quantidade_str = qtd_match.group(1) if qtd_match else ""
 
-                    # Ler possíveis próximas células
+                    # Ler possíveis próximas colunas
                     val_next1 = ""
                     val_next2 = ""
                     if col+1 <= col_fim:
@@ -157,7 +189,7 @@ def processar_planilha(excel_file) -> dict:
                     col_consumidas = 1
 
                     if "," in val_next1:
-                        # Ex.: "AUX LIDER,6H"
+                        # "Aux. Lider,6H"
                         partes = [p.strip() for p in val_next1.split(",")]
                         if len(partes) == 2:
                             funcao, carga = partes
@@ -167,7 +199,7 @@ def processar_planilha(excel_file) -> dict:
                             carga  = val_next2
                             col_consumidas = 3
                     else:
-                        # Se val_next1 for '6H' etc.
+                        # Se val_next1 for "4H" etc.
                         if re.match(r'^\d+H$', val_next1):
                             funcao = ""
                             carga  = val_next1
@@ -181,14 +213,12 @@ def processar_planilha(excel_file) -> dict:
                             carga  = ""
                             col_consumidas = 2
 
-                    # ---- NOVA LÓGICA: ignorar números “soltos” ----
-                    # Se não tiver função e não for uma carga válida (ex '6H'),
-                    # significa que é só um número sem nada => ignora
+                    # Ignorar caso sem função e sem 'xH'
                     if not funcao and not re.match(r'^\d+H$', carga):
                         col += col_consumidas
                         continue
 
-                    # Ignorar poluições ("HORAS AQUI", "INTERVALO")
+                    # Ignorar poluição
                     if ignorar_poluicao(funcao, carga):
                         col += col_consumidas
                         continue
@@ -204,18 +234,24 @@ def processar_planilha(excel_file) -> dict:
                     else:
                         e1, s1, e2, s2 = ("","","","")
 
-                    # Salva no array
-                    registros.append({
+                    # Mapear função
+                    funcao_mapeada = mapear_cargo(funcao)
+
+                    # Monta registro
+                    reg = {
+                        "Base": nome_aba,               # nome da aba
+                        "Periodo": periodo,             # p.ex. "06/2025"
                         "Quantidade": quantidade_str,
-                        "Cargo": funcao,
+                        "Cargo": funcao_mapeada,        # já mapeado
                         "CargaHoraria": carga,
                         "Entrada1": e1,
                         "Saida1": s1,
                         "Entrada2": e2,
                         "Saida2": s2
-                    })
+                    }
+                    registros.append(reg)
 
-                    # Lógica de pulo (para evitar duplicar o pernoite)
+                    # Lógica de pulo
                     fim1 = hhmm_to_minutes(s1) if s1 else 0
                     fim2 = hhmm_to_minutes(s2) if s2 else 0
                     fim  = max(fim1, fim2)
@@ -239,18 +275,17 @@ def processar_planilha(excel_file) -> dict:
                 else:
                     col += 1
 
-        # Monta DataFrame final
         df_out = pd.DataFrame(registros, columns=[
-            "Quantidade", "Cargo", "CargaHoraria",
-            "Entrada1", "Saida1", "Entrada2", "Saida2"
+            "Base","Periodo","Quantidade","Cargo","CargaHoraria",
+            "Entrada1","Saida1","Entrada2","Saida2"
         ])
-        dict_abas_result[nome_aba] = df_out
+        if not df_out.empty:
+            dict_abas_result[nome_aba] = df_out
 
     return dict_abas_result
 
-
 #################################
-# FUNÇÕES DE DOWNLOAD (STREAMLIT)
+# 4) Funções de download
 #################################
 
 def gerar_download_link_para_df(df, filename):
@@ -273,56 +308,52 @@ def gerar_download_zip(dict_df):
 
 
 #################################
-# APP STREAMLIT (app.py)
+# 5) APP STREAMLIT (app.py)
 #################################
 
 def main():
-    st.title("Conversor de Planilha para CSV - Pernoites")
+    st.title("Conversor de Planilha - Pernoite & Mapeamento de Cargo")
 
-    st.write("""
-    **Instruções**:
-    - Faça o *upload* de um arquivo Excel contendo as abas de planejamento.
-    - As abas "BASE", "TABELAS", "PADRÕES" e "ARQUIVO BASE" serão ignoradas.
-    - O script extrairá informações (quantidade, função, carga horária, horário) e 
-      tentará unificar turnos pernoite.
-    - Algumas poluições como "5 HORAS AQUI" e "INTERVALO" serão descartadas.
-    - Agora, se encontrar um número sozinho sem função/carga, ele também será **ignorado**.
-    """)
+    # Escolha do mês e ano
+    col1, col2 = st.columns(2)
+    with col1:
+        meses = [f"{i:02d}" for i in range(1,13)]
+        mes_escolhido = st.selectbox("Mês", meses, index=0)
+    with col2:
+        anos = [str(y) for y in range(2023, 2031)]
+        ano_escolhido = st.selectbox("Ano", anos, index=2)  # ex. default 2025
+    
+    periodo = f"{mes_escolhido}/{ano_escolhido}"
 
-    uploaded_file = st.file_uploader("Selecione o arquivo Excel", type=["xls", "xlsx"])
+    st.write("**Selecione o arquivo Excel** com as abas de planejamento.")
+    uploaded_file = st.file_uploader("Arquivo Excel", type=["xls","xlsx"])
 
     if uploaded_file is not None:
         st.write("Processando... aguarde.")
-        dict_abas = processar_planilha(uploaded_file)
+        dict_abas = processar_planilha(uploaded_file, periodo)
         
         if not dict_abas:
             st.warning("Nenhuma aba válida encontrada ou nenhum registro extraído.")
             return
         
-        st.success(f"Planilha processada com sucesso! Foram encontradas {len(dict_abas)} abas válidas.")
+        st.success(f"Planilha processada com sucesso! {len(dict_abas)} abas com dados.")
 
-        # Permitir escolher quais abas o usuário quer baixar
+        # Multiselect para escolher quais abas baixar
         abas_list = list(dict_abas.keys())
         abas_selecionadas = st.multiselect(
-            "Selecione as abas para download (ou deixe vazio para baixar todas):",
-            abas_list, 
-            default=abas_list
+            "Selecione as abas para download (ou deixe todas)",
+            abas_list, default=abas_list
         )
 
-        # Botões de download individual
-        if abas_selecionadas:
-            st.write("### Download individual das abas selecionadas:")
-            for aba in abas_selecionadas:
-                df_temp = dict_abas[aba]
-                gerar_download_link_para_df(df_temp, f"{aba}.csv")
+        # Download individual
+        st.write("### Download individual:")
+        for aba in abas_selecionadas:
+            df_temp = dict_abas[aba]
+            gerar_download_link_para_df(df_temp, f"{aba}.csv")
 
-        # Botão para baixar todas as abas (ou selecionadas) em ZIP
-        st.write("### Download de todas as abas em ZIP:")
-        if abas_selecionadas:
-            dict_filtrado = {k: dict_abas[k] for k in abas_selecionadas}
-        else:
-            dict_filtrado = dict_abas
-
+        # Download zip (todas escolhidas)
+        st.write("### Download ZIP de todas as abas selecionadas:")
+        dict_filtrado = {k: dict_abas[k] for k in abas_selecionadas}
         zip_bytes, zip_name = gerar_download_zip(dict_filtrado)
         st.download_button(
             label="Baixar TODAS em ZIP",

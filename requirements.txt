@@ -1,7 +1,7 @@
 streamlit
 pandas
 openpyxl
-xlrd=
+xlrd
 Pillow
 datetime
 re

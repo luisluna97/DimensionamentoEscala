@@ -3,8 +3,3 @@ pandas
 openpyxl
 xlrd
 Pillow
-datetime
-re
-io
-zipfile
-BytesIO
